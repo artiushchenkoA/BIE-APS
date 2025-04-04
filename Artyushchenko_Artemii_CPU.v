@@ -7,7 +7,7 @@ module processor( input         clk, reset,
                   output [31:0] data_to_mem,
                   input  [31:0] data_from_mem
                 );
-    //... write your code here ...
+
 	assign address_to_mem = aluOut;
 	assign data_to_mem = writeData;
 	assign PC = programCount;
@@ -19,6 +19,8 @@ module processor( input         clk, reset,
 		if (reset)
 			programCount <= {32{1'b0}}; 	
 	end
+
+	//Cables(wires)
 
 	wire [31:0]rs1;
 	wire [31:0]aluOut;
@@ -32,7 +34,8 @@ module processor( input         clk, reset,
     wire [31:0]pcPlusFour;
     wire [31:0]branchJalReturnAddr;
     wire [31:0]branchJalrMuxIn;
-    wire [31:0]srcACable;
+
+    //CU signals
 
 	wire [3:0]aluControl;
    	wire [2:0]immControl;
@@ -46,10 +49,12 @@ module processor( input         clk, reset,
 	wire branchJalr;
 	wire branchBlt;
 
+	//Constructors
+
 	cu cu (
 		instruction,
-		aluControl,
 		immControl,
+		aluControl,
 		memWrite,
 		regWrite,
 		aluSrc,
@@ -59,32 +64,96 @@ module processor( input         clk, reset,
 		branchJalr,
 		branchBlt
 	);
-	alu32 alu32 (srcACable, aluSrcOut, aluControl, zero, aluOut);
-    immDecode immDecode (instruction[31:7]/*from instr mem*/, immControl/*from cu*/, immOp/*output to aluSrcMux and dataMemory*/);
-	reg32 registerSet(instruction[19:15]/*a1*/, instruction[24:20]/*a2*/, instruction[11:7]/*a3*/, memToRegRes/*memToRegMux result*/, clk, regWrite/*from cu*/, rs1/*wire*/, writeData/*goes to aluSrcMux and dataMemory*/); 	
-	assign branchJalrMuxIn = immOp + programCount; //branch adder
-	wire branchBx = (branchBeq & zero);  
-	assign pcPlusFour = programCount + 3'b100;
+
+
+	alu32 alu32 (
+		.srcA      (rs1),
+		.srcB      (aluSrcOut),
+		.aluControl(aluControl),
+		.aluResult (aluOut),
+		.zero      (zero)
+	);
+    
+
+    immDecode immDecode(
+    	.immControl (immControl),
+    	.instruction(instruction[31:7]),
+    	.immOut     (immOp)
+    );
+	
+	
+	reg32 registerSet(
+		.a1 (instruction[19:15]),
+		.a2 (instruction[24:20]),
+		.a3 (instruction[11:7]),
+		.wd3(memToRegRes),
+		.clk(clk),
+		.we3(regWrite),
+		.rd1(rs1),
+		.rd2(writeData)
+	);
+
+	mux32 aluSrcMux(
+		.select(aluSrc),
+		.d0    (writeData),
+		.d1    (immOp),
+		.y     (aluSrcOut)
+	);
+
+
+	mux32 branchOutcomeMux(
+		.select(branchOutcome),
+		.d0    (pcPlusFour),
+		.d1    (branchTarget),
+		.y     (PC_cable)
+	);
+
+
+	mux32 branchJalrMux(
+		.select(branchJalr),
+		.d0    (branchJalrMuxIn),
+		.d1    (aluOut),
+		.y     (branchTarget)
+	);
+
+
+	mux32 branchJalJalrMux(
+		.select(branchJalx),
+		.d0    (aluOut),
+		.d1    (pcPlusFour),
+		.y     (branchJalReturnAddr)
+	);
+	
+
+	mux32 memToRegMux(
+		.select(memToReg),
+		.d0    (branchJalReturnAddr),
+		.d1    (readData),
+		.y     (memToRegRes)
+	);
+
+	//Additional elements
+
 	wire branchJalx = branchJal | branchJalr;
+	
+	assign branchJalrMuxIn = immOp + programCount;
+	
+	wire branchBx = (branchBeq & zero);  
+	
+	assign pcPlusFour = programCount + 3'b100;
+	
 	wire branchOutcome = branchBx | branchJalx;
-	mux32 aluSrcMux(writeData, immOp, aluSrc, aluSrcOut);
-	mux32 branchOutcomeMux(pcPlusFour, branchTarget, branchOutcome, PC_cable);
-	mux32 branchJalrMux(branchJalrMuxIn, aluOut, branchJalr, branchTarget); 	
-	mux32 branchJalJalrMux(aluOut, pcPlusFour, branchJalx, branchJalReturnAddr); 
-	mux32 memToRegMux(branchJalReturnAddr, readData, memToReg, memToRegRes); 
 
 endmodule
 
-//... add new Verilog modules here ...
-
 module mux32(
-	input [31:0]a,
-   	input [31:0]b,
 	input select,
+	input [31:0]d0,
+   	input [31:0]d1,
 	output [31:0]y 	
 ); 
 
-	assign y = (a & ~select) | (b & select); 
+	assign y = select ? d1 : d0;
 endmodule
 
 module reg32(
@@ -92,51 +161,34 @@ module reg32(
 	input [4:0]a2, 
 	input [4:0]a3,
    	input [31:0]wd3,
-	input we3,	
-	input clk,
+	input clk,	
+	input we3,
 	output [31:0]rd1, 	
 	output [31:0]rd2
 );
 
-	reg [31:0] rf [31:0];
+	reg [31:0] registers [31:0];
 
-	initial begin
-		rf[0] = 32'b0;
-	end
+    assign rd1 = a1 == 0 ? 0 : registers[a1];
+    assign rd2 = a2 == 0 ? 0 : registers[a2];
 
-	assign rd1 = rf[a1];
-	assign rd2 = rf[a2];
+    always @ ( posedge clk )
+        if ( we3 && a3 != 0 )
+            registers[a3] <= wd3;
 
-	always @(posedge clk) begin
-		if (we3 && a3 != 5'b0) begin
-			rf[a3] <= wd3;
-		end
-	end 	
 endmodule
 
 module alu32(
 	input signed [31:0]srcA,  
 	input signed [31:0]srcB,
   	input [3:0]aluControl,
-	output reg zero,
-	output reg [31:0]aluResult 	
+  	output reg [31:0]aluResult,
+	output reg zero 	
 ); 
-`ifndef CLOG2_FUNCTION
-`define CLOG2_FUNCTION
 
-function integer clog2;
-    input integer value;
-          integer temp;
-    begin
-        temp = value - 1;
-        for (clog2 = 0; temp > 0; clog2 = clog2 + 1) begin
-            temp = temp >> 1;
-        end
-    end
-endfunction
-`endif
+	reg [7:0]exponent;
+	reg [31:0]log2_result;
 
-	integer tmp;
 	always @(*) begin
 		case (aluControl)
 			   4'b0000: aluResult = srcA + srcB; 	
@@ -148,24 +200,31 @@ endfunction
 			   4'b0110: aluResult = srcB; 	
 			   4'b0111: aluResult = srcA | srcB; 	
 			   4'b1001: aluResult = srcA >> srcB; //srl
+			   4'b1010: begin //floor_log
+					exponent = srcA[30:23];
+					log2_result = exponent - 8'b01111111;
+					// aluResult = $signed(log2_result);
+					aluResult = log2_result;
+			   end
+			   default: aluResult = 32'b0;
 	    endcase
-	zero = aluResult == 0 ? 1 : 0;
+	zero = (aluResult == 0) ? 1 : 0;
    	end
 endmodule
 
 
 module cu(
 	input [31:0]instruction,
-   	output reg [3:0]aluControl,	
 	output reg [2:0]immControl,
+   	output reg [3:0]aluControl,
+   	output reg memWrite,
+   	output reg regWrite,
+   	output reg aluSrc,
+   	output reg memToReg,
 	output reg branchBeq,
 	output reg branchJal,
 	output reg branchJalr,
-	output reg branchBlt,
-   	output reg regWrite,	
-	output reg memToReg,
-   	output reg memWrite,	
-   	output reg aluSrc
+	output reg branchBlt	
 );
 
 	wire [6:0]opcode = instruction[6:0];
@@ -174,6 +233,18 @@ module cu(
 
 	always @(*)begin
 		case (opcode)
+			7'b0001011: begin //floor_log
+				immControl = 3'b000;
+				aluControl = 4'b1010;
+				memWrite = 0;
+				regWrite = 1;
+				aluSrc = 0;
+				memToReg = 0;
+				branchBeq = 0;
+				branchJal = 0;
+				branchBlt = 0;
+				branchJalr = 0;
+			end
 			7'b0110011: begin
 				case (function3)
 					3'b000: begin
@@ -285,7 +356,7 @@ module cu(
 			7'b1100111: begin
 				case (function3)
 					3'b000: begin //jalr
-						immControl = 3'b101;
+						immControl = 3'b001;
 						aluControl = 4'b0000;
 						memWrite = 0;
 						regWrite = 1;
@@ -294,7 +365,7 @@ module cu(
 						branchBeq = 0;
 						branchJal = 0;
 						branchBlt = 0;
-						branchJalr =1;
+						branchJalr = 1;
 					end	
 				endcase
 			end
@@ -335,7 +406,7 @@ module cu(
 						regWrite = 0;
 						aluSrc = 0;
 						memToReg = 0;
-						branchBeq = 1;
+						branchBeq = 0;
 						branchJal = 0;
 						branchBlt = 1;
 						branchJalr = 0;
@@ -349,49 +420,52 @@ module cu(
 					regWrite = 1;
 					aluSrc = 1;
 					memToReg = 0;
-					branchBeq = 1;
+					branchBeq = 0;
 					branchJal = 0;
-					branchBlt = 1;
+					branchBlt = 0;
 					branchJalr = 0;
 			end
-			7'b0001011: begin //floor_log
-				case (function3)
-					3'b000: begin
-						immControl = 3'b000; 
-						aluControl = 4'b1010;
-						memWrite = 0;
-						regWrite = 1;
-						aluSrc = 0;
-						memToReg = 0;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 0;
-						branchJalr = 0;
-					end
-			endcase
-			end	
 		endcase
 	end	
 endmodule
 
 module immDecode(
+	input [2:0]immControl,
 	input [31:7]instruction,
-   	input [2:0]immControl,
 	output reg [31:0]immOut 	
 );
 
 always @(*) begin
 	case (immControl)
-		3'b000: //I-type Imm
-			immOut = {{20{instruction[31]}}, instruction[31:20]}; 	
-		3'b001: //S-type Imm
-			immOut = {{20{instruction[31]}}, instruction[31:25], instruction[11:7]};
-		3'b010: //B-type Imm
-			immOut = {{19{instruction[31]}}, instruction[31], instruction[7], instruction[30:25], instruction[11:8], 1'b0}; 	
-		3'b011: //U-type Imm
-			immOut = {instruction[31:12], 12'b0}; 
-		3'b100: //J-type Imm
-			immOut = {{11{instruction[31]}}, instruction[31], instruction[119:12], instruction[20], instruction[30:21], 1'b0};
+		3'b001: begin
+                immOut[11:0] = instruction[31:20]; // I-type
+                immOut[31:12] = { 20 { instruction[31] } }; // sign extension
+            end 	
+		3'b010: begin // S-type
+                immOut[11:5] = instruction[31:25]; 
+                immOut[4:0] = instruction[11:7];
+                immOut[31:12] = { 20 { instruction[31] } }; // sign extension
+            end
+		3'b011: begin // B-type
+                immOut[12] = instruction[31];
+                immOut[10:5] = instruction[30:25];
+                immOut[11] = instruction[7];
+                immOut[4:1] = instruction[11:8];
+                immOut[0] = 0;
+                immOut[31:13] = { 19 { instruction[31] } }; // sign extension
+            end 	
+		3'b100: begin // U-type
+                immOut[31:12] = instruction[31:12]; 
+                immOut[11:0] = { 12 { 1'b0 } };
+            end
+		3'b101: begin // J-type
+                    immOut[31:21] = { 11 { instruction[31] } }; // sign extension
+                    immOut[20] = instruction[31];
+                    immOut[10:1] = instruction[30:21];
+                    immOut[11] = instruction[20];
+                    immOut[19:12] = instruction[19:12];
+                    immOut[0] = 0;
+            end
    		default:
 			immOut = 32'b0; 	
 	endcase		
