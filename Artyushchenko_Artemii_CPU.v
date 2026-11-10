@@ -135,13 +135,11 @@ module processor( input         clk, reset,
 	//Additional elements
 
 	wire branchJalx = branchJal | branchJalr;
-	
 	assign branchJalrMuxIn = immOp + programCount;
-	
-	wire branchBx = (branchBeq & zero);  
-	
-	assign pcPlusFour = programCount + 3'b100;
-	
+	assign pcPlusFour = programCount + 32'd4;
+	wire branchTakeBeq = branchBeq & zero;
+	wire branchTakeBlt = branchBlt & aluOut[0]; // SLT result bit 0 is high when srcA < srcB
+	wire branchBx = branchTakeBeq | branchTakeBlt;
 	wire branchOutcome = branchBx | branchJalx;
 
 endmodule
@@ -185,10 +183,6 @@ module alu32(
   	output reg [31:0]aluResult,
 	output reg zero 	
 ); 
-
-	reg [7:0]exponent;
-	reg [31:0]log2_result;
-
 	always @(*) begin
 		case (aluControl)
 			   4'b0000: aluResult = srcA + srcB; 	
@@ -199,12 +193,18 @@ module alu32(
 			   4'b0101: aluResult = srcA % srcB; 	
 			   4'b0110: aluResult = srcB; 	
 			   4'b0111: aluResult = srcA | srcB; 	
-			   4'b1001: aluResult = srcA >> srcB; //srl
-			   4'b1010: begin //floor_log
-					exponent = srcA[30:23];
-					log2_result = exponent - 8'b01111111;
-					// aluResult = $signed(log2_result);
-					aluResult = log2_result;
+			   4'b1001: aluResult = $unsigned(srcA) >> srcB[4:0]; //srl
+			   4'b1011: begin //add_v
+				aluResult[31:24] = srcA[31:24] + srcB[31:24];
+				aluResult[23:16] = srcA[23:16] + srcB[23:16];
+				aluResult[15:8] = srcA[15:8] + srcB[15:8];
+				aluResult[7:0] = srcA[7:0] + srcB[7:0];
+			   end
+			   4'b1100: begin //avg_v
+				aluResult[31:24] = ({1'b0, srcA[31:24]} + {1'b0, srcB[31:24]}) >> 1;
+				aluResult[23:16] = ({1'b0, srcA[23:16]} + {1'b0, srcB[23:16]}) >> 1;
+				aluResult[15:8]  = ({1'b0, srcA[15:8]}  + {1'b0, srcB[15:8]})  >> 1;
+				aluResult[7:0]   = ({1'b0, srcA[7:0]}   + {1'b0, srcB[7:0]})   >> 1;
 			   end
 			   default: aluResult = 32'b0;
 	    endcase
@@ -232,78 +232,46 @@ module cu(
 	wire [31:25]function7 = instruction[31:25];  	
 
 	always @(*)begin
+
+		immControl = 3'b000;
+		aluControl = 4'b0000;
+		memWrite = 0;
+		regWrite = 0;
+		aluSrc = 0;
+		memToReg = 0;
+		branchBeq = 0;
+		branchJal = 0;
+		branchBlt = 0;
+		branchJalr = 0;
+		
 		case (opcode)
-			7'b0001011: begin //floor_log
-				immControl = 3'b000;
-				aluControl = 4'b1010;
-				memWrite = 0;
-				regWrite = 1;
-				aluSrc = 0;
-				memToReg = 0;
-				branchBeq = 0;
-				branchJal = 0;
-				branchBlt = 0;
-				branchJalr = 0;
-			end
 			7'b0110011: begin
 				case (function3)
 					3'b000: begin
 						case (function7)
 							7'b0000000: begin //add
-								immControl = 3'b000;
 								aluControl = 4'b0000;
-								memWrite = 0;
 								regWrite = 1;
-								aluSrc = 0;
-								memToReg = 0;
-								branchBeq = 0;
-								branchJal = 0;
-								branchBlt = 0;
-								branchJalr = 0;
 							end
 							7'b0100000: begin //sub
-								immControl = 3'b000;
 								aluControl = 4'b0001;
-								memWrite = 0;
 								regWrite = 1;
-								aluSrc = 0;
-								memToReg = 0;
-								branchBeq = 0;
-								branchJal = 0;
-								branchBlt = 0;
-								branchJalr = 0;
 							end	
 						endcase	
 					end
 					3'b111: begin
 						case (function7)
 							7'b0000000: begin //and
-								immControl = 3'b000;
 								aluControl = 4'b0010;
-								memWrite = 0;
 								regWrite = 1;
-								aluSrc = 0;
-								memToReg = 0;
-								branchBeq = 0;
-								branchJal = 0;
-								branchBlt = 0;
-								branchJalr = 0;
 							end	
 						endcase
 					end
 					3'b101: begin
 						case (function7)
 							7'b0000000: begin //srl
-								immControl = 3'b000;
 								aluControl = 4'b1001;
-								memWrite = 0;
 								regWrite = 1;
-								aluSrc = 0;
-								memToReg = 0;
-								branchBeq = 0;
-								branchJal = 0;
-								branchBlt = 0;
-								branchJalr = 0;
 							end
 						endcase	
 					end	
@@ -313,15 +281,10 @@ module cu(
 				case (function3)
 					3'b010: begin // lw
 						immControl = 3'b001;
-					   	aluControl = 4'b0000;
-						memWrite = 0;
+						aluControl = 4'b0000;
 						regWrite = 1;
 						aluSrc = 1;
 						memToReg = 1;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 0;
-						branchJalr = 0;	
 					end		
 				endcase	
 			end
@@ -330,41 +293,24 @@ module cu(
 					3'b010: begin //sw
 						immControl = 3'b010;
 						aluControl = 4'b0000;
-						memWrite = 1;
-						regWrite = 0;
-						aluSrc = 1;
-						memToReg = 1;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 0;
-						branchJalr = 0;
+						memWrite   = 1;
+						aluSrc     = 1;
 					end
 				endcase	
 			end
 			7'b1101111: begin //jal
-					immControl = 3'b101;
-					aluControl = 4'b0000;
-					memWrite = 0;
-					regWrite = 1;
-					aluSrc = 0;
-					memToReg = 0;
-					branchBeq = 0;
-					branchJal = 1;
-					branchBlt = 0;
-					branchJalr = 0;
+				immControl = 3'b101;
+				aluControl = 4'b0000;
+				regWrite   = 1;
+				branchJal  = 1;
 			end
 			7'b1100111: begin
 				case (function3)
 					3'b000: begin //jalr
 						immControl = 3'b001;
 						aluControl = 4'b0000;
-						memWrite = 0;
-						regWrite = 1;
-						aluSrc = 1;
-						memToReg = 0;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 0;
+						regWrite   = 1;
+						aluSrc     = 1;
 						branchJalr = 1;
 					end	
 				endcase
@@ -374,14 +320,8 @@ module cu(
 					3'b000: begin //addi
 						immControl = 3'b001;
 						aluControl = 4'b0000;
-						memWrite = 0;
-						regWrite = 1;
-						aluSrc = 1;
-						memToReg = 0;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 0;
-						branchJalr = 0;
+						regWrite   = 1;
+						aluSrc     = 1;
 					end	
 				endcase	
 			end
@@ -390,40 +330,34 @@ module cu(
 					3'b000: begin //beq
 						immControl = 3'b011;
 						aluControl = 4'b0001;
-						memWrite = 0;
-						regWrite = 0;
-						aluSrc = 0;
-						memToReg = 0;
-						branchBeq = 1;
-						branchJal = 0;
-						branchBlt = 0;
-						branchJalr = 0;
+						branchBeq  = 1;
 					end	
 					3'b100: begin //blt
 						immControl = 3'b011;
 						aluControl = 4'b0011;
-						memWrite = 0;
-						regWrite = 0;
-						aluSrc = 0;
-						memToReg = 0;
-						branchBeq = 0;
-						branchJal = 0;
-						branchBlt = 1;
-						branchJalr = 0;
+						branchBlt  = 1;
 					end	
 				endcase	
 			end
-			7'b0110111: begin //lui
-					immControl = 3'b100;
-					aluControl = 4'b0110;
-					memWrite = 0;
-					regWrite = 1;
-					aluSrc = 1;
-					memToReg = 0;
-					branchBeq = 0;
-					branchJal = 0;
-					branchBlt = 0;
-					branchJalr = 0;
+			7'b0001011: begin // custom
+				case (function3)
+					3'b001: begin // add_v
+						immControl = 3'b000;
+						aluControl = 4'b1011;
+						regWrite   = 1;
+					end
+					3'b010: begin // avg_v
+						immControl = 3'b000;
+						aluControl = 4'b1100;
+						regWrite   = 1;
+					end
+				endcase
+			end
+			7'b0110111: begin // lui
+    			immControl = 3'b100;
+    			aluControl = 4'b0110;
+    			regWrite   = 1;
+    			aluSrc     = 1;
 			end
 		endcase
 	end	
